@@ -72,7 +72,7 @@ const workerCode = `
   };
 
   self.onmessage = (event) => {
-    const { type, payload, jobId, append } = event.data;
+    const { type, payload, jobId, append, clearFirst } = event.data;
 
     try {
       switch (type) {
@@ -80,6 +80,10 @@ const workerCode = `
           const data = typeof payload === 'string' ? JSON.parse(payload) : payload;
           if (!Array.isArray(data)) throw new Error("JSON is not an array.");
           
+          if (clearFirst) {
+              allTranslations = [];
+          }
+
           if (append) {
              const existingMap = new Map();
              let noKeyCounter = 0;
@@ -477,7 +481,8 @@ const App: React.FC = () => {
 
   // App State
   const [refineQuery, setRefineQuery] = useState('');
-  const [loadedFiles, setLoadedFiles] = useState<{name: string, count: number}[]>([]);
+  const [loadedFiles, setLoadedFiles] = useState<{name: string, count: number, checked: boolean}[]>([]);
+  const fileDataRef = useRef<{name: string, data: any[]}[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -727,37 +732,71 @@ const App: React.FC = () => {
     setTargetFilters(prev => prev.map(item => item.id === id ? { ...item, [field]: value } : item));
   };
 
+  const reloadWorkerData = useCallback((filesState: {name: string, count: number, checked: boolean}[]) => {
+    setStatus('loading');
+    const newJobId = Date.now();
+    jobIdRef.current = newJobId;
+
+    let allData: any[] = [];
+    filesState.forEach(fileState => {
+      if (fileState.checked) {
+        const fileData = fileDataRef.current.find(f => f.name === fileState.name);
+        if (fileData) {
+          allData = allData.concat(fileData.data);
+        }
+      }
+    });
+
+    // We pass append: true to the worker so it merges the data correctly,
+    // but we first need to tell the worker to clear its current state if we are passing all data.
+    // Wait, the worker's 'load' with append=false just overwrites allTranslations.
+    // So we can just pass append=true if we want merging, but since we are sending ALL checked data at once,
+    // we can just send append=true and let it merge them all.
+    // Actually, if we send append=true, it merges with existing data. We want to REPLACE existing data with the new merged set.
+    // So we should send append=false, but wait, append=false in the worker doesn't merge keys, it just replaces allTranslations with the array!
+    // Let's check the worker code for 'load'.
+    workerRef.current?.postMessage({ type: 'load', jobId: newJobId, payload: allData, append: true, clearFirst: true });
+  }, []);
+
   const processFiles = async (files: File[], append: boolean = false) => {
     if (files.length === 0) return;
     
     setError(null);
     setStatus('loading');
-    
-    const newJobId = Date.now();
-    jobIdRef.current = newJobId;
 
     try {
-      let allData: any[] = [];
-      const newFileInfos: {name: string, count: number}[] = [];
+      const newFileInfos: {name: string, count: number, checked: boolean}[] = [];
+      const newFileData: {name: string, data: any[]}[] = [];
       for (const file of files) {
         const text = await file.text();
         const json = JSON.parse(text);
         if (!Array.isArray(json)) throw new Error(`File ${file.name} is not a JSON array.`);
-        allData = allData.concat(json);
-        newFileInfos.push({ name: file.name, count: json.length });
+        newFileInfos.push({ name: file.name, count: json.length, checked: true });
+        newFileData.push({ name: file.name, data: json });
       }
       
+      let updatedFilesState;
       if (!append) {
-        setLoadedFiles(newFileInfos);
+        updatedFilesState = newFileInfos;
+        fileDataRef.current = newFileData;
       } else {
-        setLoadedFiles(prev => [...prev, ...newFileInfos]);
+        updatedFilesState = [...loadedFiles, ...newFileInfos];
+        fileDataRef.current = [...fileDataRef.current, ...newFileData];
       }
       
-      workerRef.current?.postMessage({ type: 'load', jobId: newJobId, payload: allData, append });
+      setLoadedFiles(updatedFilesState);
+      reloadWorkerData(updatedFilesState);
     } catch (err: any) {
       setError(err.message || "Failed to read files");
       setStatus('error');
     }
+  };
+
+  const toggleFileCheck = (index: number) => {
+    const updatedFilesState = [...loadedFiles];
+    updatedFilesState[index].checked = !updatedFilesState[index].checked;
+    setLoadedFiles(updatedFilesState);
+    reloadWorkerData(updatedFilesState);
   };
 
   const handleCopy = (view: 'main' | 'subset') => {
@@ -846,7 +885,15 @@ const App: React.FC = () => {
                           <ul className="space-y-1.5 mb-3 max-h-32 overflow-y-auto custom-scrollbar pr-2">
                             {loadedFiles.map((f, i) => (
                               <li key={i} className="flex justify-between items-center text-gray-300">
-                                <span className="truncate mr-2" title={f.name}>{f.name}</span>
+                                <label className="flex items-center cursor-pointer min-w-0 flex-1 mr-2">
+                                  <input 
+                                    type="checkbox" 
+                                    checked={f.checked} 
+                                    onChange={() => toggleFileCheck(i)} 
+                                    className="mr-2 h-3.5 w-3.5 accent-cyan-500 flex-shrink-0"
+                                  />
+                                  <span className="truncate" title={f.name}>{f.name}</span>
+                                </label>
                                 <span className="text-cyan-400 flex-shrink-0">{f.count.toLocaleString()}</span>
                               </li>
                             ))}
