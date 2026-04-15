@@ -477,7 +477,7 @@ const App: React.FC = () => {
 
   // App State
   const [refineQuery, setRefineQuery] = useState('');
-  const [fileName, setFileName] = useState<string | null>(null);
+  const [loadedFiles, setLoadedFiles] = useState<{name: string, count: number}[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -730,12 +730,6 @@ const App: React.FC = () => {
   const processFiles = async (files: File[], append: boolean = false) => {
     if (files.length === 0) return;
     
-    if (!append) {
-      setFileName(files.length === 1 ? files[0].name : `${files.length} files`);
-    } else {
-      setFileName(prev => prev ? `${prev} + ${files.length} files` : (files.length === 1 ? files[0].name : `${files.length} files`));
-    }
-    
     setError(null);
     setStatus('loading');
     
@@ -744,11 +738,19 @@ const App: React.FC = () => {
 
     try {
       let allData: any[] = [];
+      const newFileInfos: {name: string, count: number}[] = [];
       for (const file of files) {
         const text = await file.text();
         const json = JSON.parse(text);
         if (!Array.isArray(json)) throw new Error(`File ${file.name} is not a JSON array.`);
         allData = allData.concat(json);
+        newFileInfos.push({ name: file.name, count: json.length });
+      }
+      
+      if (!append) {
+        setLoadedFiles(newFileInfos);
+      } else {
+        setLoadedFiles(prev => [...prev, ...newFileInfos]);
       }
       
       workerRef.current?.postMessage({ type: 'load', jobId: newJobId, payload: allData, append });
@@ -837,14 +839,23 @@ const App: React.FC = () => {
                             </div>
                         </div>
                     </div>
-                    {fileName && (
-                      <div className="mt-3 space-y-2">
-                        <p className="text-xs text-cyan-400 font-mono">
-                          Current: {fileName}
-                          {status === 'ready' && totalCount > 0 && (
-                            <span className="ml-2 text-yellow-400 font-bold">({totalCount})</span>
-                          )}
-                        </p>
+                    {loadedFiles.length > 0 && (
+                      <div className="mt-3 space-y-3">
+                        <div className="bg-gray-900/50 border border-gray-700 rounded p-3 text-xs font-mono">
+                          <div className="text-gray-400 mb-2 uppercase tracking-wider font-bold text-[10px]">Loaded Files</div>
+                          <ul className="space-y-1.5 mb-3 max-h-32 overflow-y-auto custom-scrollbar pr-2">
+                            {loadedFiles.map((f, i) => (
+                              <li key={i} className="flex justify-between items-center text-gray-300">
+                                <span className="truncate mr-2" title={f.name}>{f.name}</span>
+                                <span className="text-cyan-400 flex-shrink-0">{f.count.toLocaleString()}</span>
+                              </li>
+                            ))}
+                          </ul>
+                          <div className="flex justify-between items-center pt-2 border-t border-gray-700/50 text-cyan-300 font-bold">
+                            <span>Total Merged:</span>
+                            <span>{status === 'ready' ? totalCount.toLocaleString() : '...'}</span>
+                          </div>
+                        </div>
                         <div className="flex gap-2">
                             <label className="cursor-pointer text-xs bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-white font-medium transition-colors">
                                 Append File(s)
@@ -855,6 +866,11 @@ const App: React.FC = () => {
                     )}
                     {error && <p className="text-xs text-red-400 mt-2">{error}</p>}
                 </div>
+
+                <button onClick={handleApplyFilters} disabled={status === 'loading' || status === 'filtering' || status === 'copying'}
+                    className="w-full py-2.5 bg-cyan-600 hover:bg-cyan-500 disabled:bg-gray-700 text-white font-bold rounded shadow-lg transition-all active:scale-[0.98] sticky top-4 z-10">
+                    {status === 'filtering' ? 'Filtering...' : 'Apply Filters'}
+                </button>
 
                 <div className="space-y-5">
                     <section>
@@ -1136,11 +1152,6 @@ const App: React.FC = () => {
                         </div>
                     </section>
                 </div>
-
-                <button onClick={handleApplyFilters} disabled={status === 'loading' || status === 'filtering' || status === 'copying'}
-                    className="w-full py-2.5 bg-cyan-600 hover:bg-cyan-500 disabled:bg-gray-700 text-white font-bold rounded shadow-lg transition-all active:scale-[0.98]">
-                    {status === 'filtering' ? 'Filtering...' : 'Apply Filters'}
-                </button>
              </div>
           </div>
 
