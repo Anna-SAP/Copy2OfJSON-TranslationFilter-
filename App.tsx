@@ -33,6 +33,7 @@ const workerCode = `
   let primaryFilteredTranslations = []; 
   let finalFilteredTranslations = []; 
   let currentRefineSources = [];
+  let currentRefineTaskNames = [];
   let detectedKeys = []; 
 
   const PAGE_SIZE = 50;
@@ -49,6 +50,7 @@ const workerCode = `
          resultData = pageData.map(item => {
             const newItem = { key: item.key };
             if (item.source) newItem.source = item.source;
+            if (item._source) newItem._source = item._source;
             selectedLanguages.forEach(lang => {
                if (item[lang] !== undefined) {
                  newItem[lang] = item[lang];
@@ -62,12 +64,39 @@ const workerCode = `
   };
 
   const applyRefine = () => {
-     if (!currentRefineSources || currentRefineSources.length === 0) {
+     const hasSources = currentRefineSources && currentRefineSources.length > 0;
+     const hasTaskNames = currentRefineTaskNames && currentRefineTaskNames.length > 0;
+
+     if (!hasSources && !hasTaskNames) {
          finalFilteredTranslations = primaryFilteredTranslations;
      } else {
          finalFilteredTranslations = primaryFilteredTranslations.filter(item => {
-             if (!item.source) return false;
-             return currentRefineSources.some(src => item.source.includes(src));
+             let matchSource = !hasSources;
+             let matchTaskName = !hasTaskNames;
+
+             if (hasSources && item.source) {
+                 matchSource = currentRefineSources.some(src => item.source.includes(src));
+             }
+             if (hasTaskNames) {
+                 let tNames = [];
+                 if (item._source) {
+                     if (Array.isArray(item._source)) {
+                         item._source.forEach(s => { if (s && s.task_name) tNames.push(s.task_name); });
+                     } else if (item._source.task_name) {
+                         tNames.push(item._source.task_name);
+                     }
+                 }
+                 if (item.task_name) tNames.push(item.task_name);
+
+                 if (tNames.length > 0) {
+                     matchTaskName = currentRefineTaskNames.some(tn => tNames.includes(tn));
+                 } else {
+                     matchTaskName = false;
+                 }
+             }
+
+             // If both are active, should match both conditions (an intersection filter)
+             return matchSource && matchTaskName;
          });
      }
   };
@@ -111,7 +140,25 @@ const workerCode = `
                                  newSource = item.source;
                              }
                          }
-                         existingMap.set(k, { ...existingItem, ...item, source: newSource });
+
+                         let merged_source = existingItem._source || undefined;
+                         if (item._source) {
+                             if (existingItem._source) {
+                                 const arr1 = Array.isArray(existingItem._source) ? existingItem._source : [existingItem._source];
+                                 const arr2 = Array.isArray(item._source) ? item._source : [item._source];
+                                 const combined = [...arr1];
+                                 arr2.forEach(s2 => {
+                                     if (!combined.some(s1 => JSON.stringify(s1) === JSON.stringify(s2))) {
+                                         combined.push(s2);
+                                     }
+                                 });
+                                 merged_source = combined.length === 1 ? combined[0] : combined;
+                             } else {
+                                 merged_source = item._source;
+                             }
+                         }
+
+                         existingMap.set(k, { ...existingItem, ...item, source: newSource, _source: merged_source });
                      } else {
                          existingMap.set(k, item);
                      }
@@ -403,6 +450,7 @@ const workerCode = `
 
         case 'refine':
           currentRefineSources = payload.sources || [];
+          currentRefineTaskNames = payload.taskNames || [];
           applyRefine();
           self.postMessage({ type: 'filtered', count: finalFilteredTranslations.length, jobId });
           break;
@@ -420,6 +468,7 @@ const workerCode = `
              out = finalFilteredTranslations.map(item => {
                 const n = { key: item.key };
                 if (item.source) n.source = item.source;
+                if (item._source) n._source = item._source;
                 sl.forEach(l => { if (item[l] !== undefined) n[l] = item[l]; });
                 return n;
              });
@@ -432,6 +481,7 @@ const workerCode = `
           const trans = finalFilteredTranslations.reduce((acc, item) => {
               const n = { key: item.key };
               if (item.source) n.source = item.source;
+              if (item._source) n._source = item._source;
               let valid = false;
               if (Array.isArray(tl)) {
                   tl.forEach(l => { if (item[l] !== undefined) { n[l] = item[l]; if (l !== 'en-US') valid = true; } });
@@ -495,10 +545,38 @@ const App: React.FC = () => {
 
   // App State
   const [refineSources, setRefineSources] = useState<string[]>([]);
+  const [refineTaskNames, setRefineTaskNames] = useState<string[]>([]);
   const [loadedFiles, setLoadedFiles] = useState<{name: string, count: number, checked: boolean}[]>([]);
   const fileDataRef = useRef<{name: string, data: any[]}[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const activeTaskNames = useMemo(() => {
+     const names = new Set<string>();
+     loadedFiles.forEach(f => {
+        if (f.checked) {
+           const fd = fileDataRef.current.find(data => data.name === f.name);
+           if (fd) {
+              fd.data.forEach(item => {
+                 const src = item?._source;
+                 if (src) {
+                    if (Array.isArray(src)) {
+                        src.forEach(s => {
+                            if (s?.task_name) names.add(s.task_name);
+                        });
+                    } else if (src.task_name) {
+                        names.add(src.task_name);
+                    }
+                 }
+                 if (item?.task_name) {
+                     names.add(item.task_name);
+                 }
+              });
+           }
+        }
+     });
+     return Array.from(names).sort();
+  }, [loadedFiles]);
 
   const [availableLanguages, setAvailableLanguages] = useState<string[]>([]);
   const [selectedLanguages, setSelectedLanguages] = useState<Set<string>>(new Set());
@@ -680,13 +758,27 @@ const App: React.FC = () => {
     
     setRefineSources(newSources);
     if (status !== 'ready') return;
-    workerRef.current?.postMessage({ type: 'refine', jobId: jobIdRef.current, payload: { sources: newSources } });
+    workerRef.current?.postMessage({ type: 'refine', jobId: jobIdRef.current, payload: { sources: newSources, taskNames: refineTaskNames } });
   };
   
   const handleRefineSourceAllToggle = () => {
      setRefineSources([]);
      if (status !== 'ready') return;
-     workerRef.current?.postMessage({ type: 'refine', jobId: jobIdRef.current, payload: { sources: [] } });
+     workerRef.current?.postMessage({ type: 'refine', jobId: jobIdRef.current, payload: { sources: [], taskNames: refineTaskNames } });
+  };
+
+  const handleRefineTaskNameChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+     const options = e.target.options;
+     const selected: string[] = [];
+     for (let i = 0; i < options.length; i++) {
+        if (options[i].selected && options[i].value !== "") {
+            selected.push(options[i].value);
+        }
+     }
+     
+     setRefineTaskNames(selected);
+     if (status !== 'ready') return;
+     workerRef.current?.postMessage({ type: 'refine', jobId: jobIdRef.current, payload: { sources: refineSources, taskNames: selected } });
   };
 
   const handleLanguageChange = (lang: string) => {
@@ -1284,6 +1376,29 @@ const App: React.FC = () => {
                          {f.name}
                       </button>
                     ))}
+                    {activeTaskNames.length > 0 && (
+                        <div className="ml-auto flex items-center gap-2">
+                           <span className="text-[10px] text-gray-500 uppercase font-bold tracking-wider">Task Names:</span>
+                           <select 
+                             multiple 
+                             value={refineTaskNames} 
+                             onChange={handleRefineTaskNameChange} 
+                             className="bg-gray-800 border border-gray-600 text-xs text-gray-300 rounded px-2 py-1 outline-none focus:border-cyan-500 overflow-y-auto max-h-[120px] custom-scrollbar"
+                             size={Math.min(activeTaskNames.length, 6)}
+                           >
+                              {activeTaskNames.map(tn => (
+                                 <option key={tn} value={tn} title={tn} className="py-0.5 px-1">{tn}</option>
+                              ))}
+                           </select>
+                           <button 
+                             onClick={() => { setRefineTaskNames([]); workerRef.current?.postMessage({ type: 'refine', jobId: jobIdRef.current, payload: { sources: refineSources, taskNames: [] } }); }} 
+                             className="text-[10px] text-gray-400 hover:text-cyan-400"
+                             title="Clear task selection"
+                           >
+                             Clear
+                           </button>
+                        </div>
+                    )}
                   </div>
                 </div>
                 <div className="flex-grow overflow-auto p-4 custom-scrollbar bg-gray-900/30" ref={subsetPreRef} onScroll={() => (subsetPreRef.current?.scrollHeight! - subsetPreRef.current?.scrollTop! < 800) && subsetHasMore && requestPage(subsetCurrentPage+1, 'subset')}>
