@@ -32,7 +32,7 @@ const workerCode = `
   let allTranslations = [];
   let primaryFilteredTranslations = []; 
   let finalFilteredTranslations = []; 
-  let currentRefineQuery = '';
+  let currentRefineSources = [];
   let detectedKeys = []; 
 
   const PAGE_SIZE = 50;
@@ -48,6 +48,7 @@ const workerCode = `
       if (view === 'subset' && Array.isArray(selectedLanguages)) {
          resultData = pageData.map(item => {
             const newItem = { key: item.key };
+            if (item.source) newItem.source = item.source;
             selectedLanguages.forEach(lang => {
                if (item[lang] !== undefined) {
                  newItem[lang] = item[lang];
@@ -61,13 +62,13 @@ const workerCode = `
   };
 
   const applyRefine = () => {
-     if (!currentRefineQuery) {
+     if (!currentRefineSources || currentRefineSources.length === 0) {
          finalFilteredTranslations = primaryFilteredTranslations;
      } else {
-         const lowerQuery = currentRefineQuery.toLowerCase();
-         finalFilteredTranslations = primaryFilteredTranslations.filter(item => 
-             JSON.stringify(item).toLowerCase().includes(lowerQuery)
-         );
+         finalFilteredTranslations = primaryFilteredTranslations.filter(item => {
+             if (!item.source) return false;
+             return currentRefineSources.some(src => item.source.includes(src));
+         });
      }
   };
 
@@ -99,7 +100,18 @@ const workerCode = `
                  const k = item.key;
                  if (k !== undefined && k !== null && k !== '') {
                      if (existingMap.has(k)) {
-                         existingMap.set(k, { ...existingMap.get(k), ...item });
+                         const existingItem = existingMap.get(k);
+                         let newSource = existingItem.source;
+                         if (item.source && newSource !== item.source) {
+                             if (newSource) {
+                                 if (!newSource.includes(item.source)) {
+                                     newSource += ", " + item.source;
+                                 }
+                             } else {
+                                 newSource = item.source;
+                             }
+                         }
+                         existingMap.set(k, { ...existingItem, ...item, source: newSource });
                      } else {
                          existingMap.set(k, item);
                      }
@@ -390,7 +402,7 @@ const workerCode = `
           break;
 
         case 'refine':
-          currentRefineQuery = payload.query;
+          currentRefineSources = payload.sources || [];
           applyRefine();
           self.postMessage({ type: 'filtered', count: finalFilteredTranslations.length, jobId });
           break;
@@ -407,6 +419,7 @@ const workerCode = `
           if (v === 'subset' && Array.isArray(sl)) {
              out = finalFilteredTranslations.map(item => {
                 const n = { key: item.key };
+                if (item.source) n.source = item.source;
                 sl.forEach(l => { if (item[l] !== undefined) n[l] = item[l]; });
                 return n;
              });
@@ -418,6 +431,7 @@ const workerCode = `
           const { selectedLanguages: tl } = payload;
           const trans = finalFilteredTranslations.reduce((acc, item) => {
               const n = { key: item.key };
+              if (item.source) n.source = item.source;
               let valid = false;
               if (Array.isArray(tl)) {
                   tl.forEach(l => { if (item[l] !== undefined) { n[l] = item[l]; if (l !== 'en-US') valid = true; } });
@@ -480,7 +494,7 @@ const App: React.FC = () => {
   const [targetLogic, setTargetLogic] = useState<'AND' | 'OR'>('AND');
 
   // App State
-  const [refineQuery, setRefineQuery] = useState('');
+  const [refineSources, setRefineSources] = useState<string[]>([]);
   const [loadedFiles, setLoadedFiles] = useState<{name: string, count: number, checked: boolean}[]>([]);
   const fileDataRef = useRef<{name: string, data: any[]}[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -650,10 +664,29 @@ const App: React.FC = () => {
     });
   }, [status, keySearch, isKeyRegex, keyNegativeSearch, isKeyNegativeRegex, sourceFilters, sourceLogic, targetFilters, targetLogic, matchKeyWholeWord, matchKeyCase, matchKeyNegativeCase, selectedLanguages]);
 
-  const handleRefineSearch = (query: string) => {
-    setRefineQuery(query);
+  const handleRefineSourceToggle = (sourceName: string) => {
+    let newSources: string[];
+    if (refineSources.includes(sourceName)) {
+      newSources = refineSources.filter(s => s !== sourceName);
+    } else {
+      newSources = [...refineSources, sourceName];
+    }
+    
+    // If user manually checks all boxes, we treat it as empty (which implies all)
+    const activeSources = loadedFiles.filter(f => f.checked).map(f => f.name);
+    if (newSources.length === activeSources.length) {
+       newSources = [];
+    }
+    
+    setRefineSources(newSources);
     if (status !== 'ready') return;
-    workerRef.current?.postMessage({ type: 'refine', jobId: jobIdRef.current, payload: { query } });
+    workerRef.current?.postMessage({ type: 'refine', jobId: jobIdRef.current, payload: { sources: newSources } });
+  };
+  
+  const handleRefineSourceAllToggle = () => {
+     setRefineSources([]);
+     if (status !== 'ready') return;
+     workerRef.current?.postMessage({ type: 'refine', jobId: jobIdRef.current, payload: { sources: [] } });
   };
 
   const handleLanguageChange = (lang: string) => {
@@ -771,8 +804,16 @@ const App: React.FC = () => {
         const text = await file.text();
         const json = JSON.parse(text);
         if (!Array.isArray(json)) throw new Error(`File ${file.name} is not a JSON array.`);
-        newFileInfos.push({ name: file.name, count: json.length, checked: true });
-        newFileData.push({ name: file.name, data: json });
+        
+        const jsonWithSource = json.map(item => {
+           if (typeof item === 'object' && item !== null) {
+              return { ...item, source: item.source ? `${item.source}, ${file.name}` : file.name };
+           }
+           return item;
+        });
+
+        newFileInfos.push({ name: file.name, count: jsonWithSource.length, checked: true });
+        newFileData.push({ name: file.name, data: jsonWithSource });
       }
       
       let updatedFilesState;
@@ -1225,7 +1266,25 @@ const App: React.FC = () => {
                         <button onClick={()=>handleCopy('subset')} className={`px-3 py-1 text-[10px] font-bold rounded uppercase transition-all ${isSubsetCopied?'bg-green-600':'bg-cyan-600 hover:bg-cyan-500'}`}>JSON</button>
                     </div>
                   </div>
-                  <input type="text" placeholder="Quick refine (Refine logic)..." value={refineQuery} onChange={(e)=>handleRefineSearch(e.target.value)} className="w-full bg-gray-900/50 border border-gray-700 rounded px-3 py-1.5 text-xs text-gray-300 outline-none focus:border-cyan-500/50"/>
+                  <div className="flex flex-wrap gap-2 items-center">
+                    <span className="text-xs text-gray-500 mr-1">Source Filter:</span>
+                    <button 
+                      onClick={handleRefineSourceAllToggle} 
+                      className={`px-2 py-1 text-[11px] font-medium rounded transition-colors ${refineSources.length === 0 ? 'bg-cyan-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
+                    >
+                      All
+                    </button>
+                    {loadedFiles.filter(f => f.checked).map((f) => (
+                      <button 
+                         key={f.name}
+                         onClick={() => handleRefineSourceToggle(f.name)}
+                         className={`px-2 py-1 text-[11px] font-medium rounded transition-colors truncate max-w-[200px] ${refineSources.includes(f.name) ? 'bg-cyan-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
+                         title={f.name}
+                      >
+                         {f.name}
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 <div className="flex-grow overflow-auto p-4 custom-scrollbar bg-gray-900/30" ref={subsetPreRef} onScroll={() => (subsetPreRef.current?.scrollHeight! - subsetPreRef.current?.scrollTop! < 800) && subsetHasMore && requestPage(subsetCurrentPage+1, 'subset')}>
                     {renderContent('subset')}
