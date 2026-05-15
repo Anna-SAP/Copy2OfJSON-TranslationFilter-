@@ -599,6 +599,7 @@ const App: React.FC = () => {
   const [isSubsetCopied, setIsSubsetCopied] = useState(false);
   const [isSubsetKeysCopied, setIsSubsetKeysCopied] = useState(false);
   const [isTranslatedCopied, setIsTranslatedCopied] = useState(false);
+  const [isTaskDropdownOpen, setIsTaskDropdownOpen] = useState(false);
 
   const workerRef = useRef<Worker | null>(null);
   const mainPreRef = useRef<HTMLDivElement | null>(null);
@@ -767,20 +768,6 @@ const App: React.FC = () => {
      setRefineSources([]);
      if (status !== 'ready') return;
      workerRef.current?.postMessage({ type: 'refine', jobId: jobIdRef.current, payload: { sources: [], taskNames: refineTaskNames } });
-  };
-
-  const handleRefineTaskNameChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-     const options = e.target.options;
-     const selected: string[] = [];
-     for (let i = 0; i < options.length; i++) {
-        if (options[i].selected && options[i].value !== "") {
-            selected.push(options[i].value);
-        }
-     }
-     
-     setRefineTaskNames(selected);
-     if (status !== 'ready') return;
-     workerRef.current?.postMessage({ type: 'refine', jobId: jobIdRef.current, payload: { sources: refineSources, taskNames: selected } });
   };
 
   const handleLanguageChange = (lang: string) => {
@@ -1379,26 +1366,60 @@ const App: React.FC = () => {
                       </button>
                     ))}
                     {activeTaskNames.length > 0 && (
-                        <div className="ml-auto flex items-center gap-2">
-                           <span className="text-[10px] text-gray-500 uppercase font-bold tracking-wider">Task Names:</span>
-                           <select 
-                             multiple 
-                             value={refineTaskNames} 
-                             onChange={handleRefineTaskNameChange} 
-                             className="bg-gray-800 border border-gray-600 text-xs text-gray-300 rounded px-2 py-1 outline-none focus:border-cyan-500 overflow-y-auto max-h-[120px] custom-scrollbar"
-                             size={Math.min(activeTaskNames.length, 6)}
-                           >
-                              {activeTaskNames.map(tn => (
-                                 <option key={tn} value={tn} title={tn} className="py-0.5 px-1">{tn}</option>
-                              ))}
-                           </select>
+                        <div className="ml-auto relative" onMouseLeave={() => setIsTaskDropdownOpen(false)}>
                            <button 
-                             onClick={() => { setRefineTaskNames([]); workerRef.current?.postMessage({ type: 'refine', jobId: jobIdRef.current, payload: { sources: refineSources, taskNames: [] } }); }} 
-                             className="text-[10px] text-gray-400 hover:text-cyan-400"
-                             title="Clear task selection"
+                               onClick={() => setIsTaskDropdownOpen(!isTaskDropdownOpen)}
+                               className="flex items-center gap-2 px-3 py-1 bg-gray-700 hover:bg-gray-600 border border-gray-600 hover:border-gray-500 text-[11px] font-medium rounded transition-colors text-gray-300"
                            >
-                             Clear
+                               Task Names
+                               {refineTaskNames.length > 0 && (
+                                   <span className="bg-cyan-600 text-white px-1.5 py-0 rounded-full text-[10px] font-bold">
+                                       {refineTaskNames.length}
+                                   </span>
+                               )}
+                               <svg className={`w-3 h-3 text-gray-400 transition-transform duration-200 ${isTaskDropdownOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                               </svg>
                            </button>
+                           
+                           {isTaskDropdownOpen && (
+                               <div className="absolute right-0 top-full mt-1 w-[400px] max-w-[80vw] bg-gray-800 border border-gray-600 rounded-lg shadow-2xl z-50 overflow-hidden flex flex-col">
+                                   <div className="flex justify-between items-center p-2 border-b border-gray-700 bg-gray-800/80">
+                                       <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Select Tasks</span>
+                                       {refineTaskNames.length > 0 && (
+                                           <button 
+                                                onClick={() => { 
+                                                    setRefineTaskNames([]); 
+                                                    workerRef.current?.postMessage({ type: 'refine', jobId: jobIdRef.current, payload: { sources: refineSources, taskNames: [] } }); 
+                                                }} 
+                                                className="text-[10px] text-gray-400 hover:text-red-400 font-bold transition-colors"
+                                           >
+                                               Clear All
+                                           </button>
+                                       )}
+                                   </div>
+                                   
+                                   <div className="max-h-[300px] overflow-y-auto custom-scrollbar p-1.5 shadow-inner bg-gray-900/10">
+                                       {activeTaskNames.map(tn => (
+                                           <label key={tn} className="flex items-start px-2 py-1.5 hover:bg-gray-700/50 cursor-pointer rounded transition-colors group">
+                                               <input 
+                                                   type="checkbox"
+                                                   checked={refineTaskNames.includes(tn)}
+                                                   onChange={(e) => {
+                                                       let newNames = [...refineTaskNames];
+                                                       if (e.target.checked) newNames.push(tn);
+                                                       else newNames = newNames.filter(n => n !== tn);
+                                                       setRefineTaskNames(newNames);
+                                                       workerRef.current?.postMessage({ type: 'refine', jobId: jobIdRef.current, payload: { sources: refineSources, taskNames: newNames } });
+                                                   }}
+                                                   className="mt-1 mr-2.5 h-3.5 w-3.5 accent-cyan-500 rounded-sm border-gray-600 cursor-pointer"
+                                               />
+                                               <span className={`text-xs break-words leading-tight flex-1 ${refineTaskNames.includes(tn) ? 'text-white font-medium' : 'text-gray-400 group-hover:text-gray-300'}`}>{tn}</span>
+                                           </label>
+                                       ))}
+                                   </div>
+                               </div>
+                           )}
                         </div>
                     )}
                   </div>
