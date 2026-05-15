@@ -337,41 +337,43 @@ const workerCode = `
                       const checkSourceGroup = (filter) => {
                           if (!filter.valid) return false;
                           
-                          const hasPos = filter.posText && filter.posText.trim() !== '';
-                          const hasNeg = filter.negText && filter.negText.trim() !== '';
+                          const sPos = filter.posText ? filter.posText.trim() : '';
+                          const sNeg = filter.negText ? filter.negText.trim() : '';
+                          const hasPos = sPos !== '';
+                          const hasNeg = sNeg !== '';
                           
                           if (!hasPos && !hasNeg) return true;
 
                           let foundPos = !hasPos;
                           let foundNeg = false;
                           
-                          const sPos = filter.posCaseSens ? filter.posText.trim() : filter.posText.trim().toLowerCase();
-                          const sNeg = filter.negCaseSens ? filter.negText.trim() : filter.negText.trim().toLowerCase();
+                          const searchPos = filter.posCaseSens ? sPos : sPos.toLowerCase();
+                          const searchNeg = filter.negCaseSens ? sNeg : sNeg.toLowerCase();
 
                           if (hasPos && !foundPos) {
                               if (filter.posIsRegex) {
                                   if (filter.posTester && filter.posTester.test(srcVal)) foundPos = true;
                               } else {
                                   const tVal = filter.posCaseSens ? srcVal : srcVal.toLowerCase();
-                                  if (filter.whole ? tVal === sPos : tVal.includes(sPos)) foundPos = true;
+                                  if (filter.whole ? tVal === searchPos : tVal.includes(searchPos)) foundPos = true;
                               }
                           }
 
-                          if (hasNeg) {
+                          if (hasNeg && !foundNeg) {
                               if (filter.negIsRegex) {
                                   if (filter.negTester && filter.negTester.test(srcVal)) {
                                       foundNeg = true;
                                   }
                               } else {
                                   const tVal = filter.negCaseSens ? srcVal : srcVal.toLowerCase();
-                                  if (filter.whole ? tVal === sNeg : tVal.includes(sNeg)) {
+                                  if (filter.whole ? tVal === searchNeg : tVal.includes(searchNeg)) {
                                       foundNeg = true;
                                   }
                               }
                           }
 
                           if (foundNeg) return false;
-                          if (!foundPos) return false;
+                          if (hasPos && !foundPos) return false;
                           return true;
                       };
 
@@ -387,18 +389,18 @@ const workerCode = `
                       const checkTargetGroup = (filter) => {
                           if (!filter.valid) return false;
                           
-                          const hasPos = filter.posText && filter.posText.trim() !== '';
-                          const hasNeg = filter.negText && filter.negText.trim() !== '';
+                          const sPos = filter.posText ? filter.posText.trim() : '';
+                          const sNeg = filter.negText ? filter.negText.trim() : '';
+                          const hasPos = sPos !== '';
+                          const hasNeg = sNeg !== '';
                           
                           if (!hasPos && !hasNeg) return true;
 
-                          let foundPos = !hasPos; // If no pos requirement, we consider it met unless overridden by failure elsewhere? 
-                                                  // Logic: "Is this item valid for this rule?" 
-                                                  // If no Pos rule, any item is candidate.
+                          let foundPos = !hasPos;
                           let foundNeg = false;
                           
-                          const sPos = filter.posCaseSens ? filter.posText.trim() : filter.posText.trim().toLowerCase();
-                          const sNeg = filter.negCaseSens ? filter.negText.trim() : filter.negText.trim().toLowerCase();
+                          const searchPos = filter.posCaseSens ? sPos : sPos.toLowerCase();
+                          const searchNeg = filter.negCaseSens ? sNeg : sNeg.toLowerCase();
 
                           for (const lang of targetLangsToCheck) {
                               const val = String(item[lang] || '');
@@ -409,28 +411,28 @@ const workerCode = `
                                       if (filter.posTester && filter.posTester.test(val)) foundPos = true;
                                   } else {
                                       const tVal = filter.posCaseSens ? val : val.toLowerCase();
-                                      if (filter.whole ? tVal === sPos : tVal.includes(sPos)) foundPos = true;
+                                      if (filter.whole ? tVal === searchPos : tVal.includes(searchPos)) foundPos = true;
                                   }
                               }
 
-                              if (hasNeg) {
+                              if (hasNeg && !foundNeg) {
                                   if (filter.negIsRegex) {
                                       if (filter.negTester && filter.negTester.test(val)) {
                                           foundNeg = true;
                                       }
                                   } else {
                                       const tVal = filter.negCaseSens ? val : val.toLowerCase();
-                                      if (filter.whole ? tVal === sNeg : tVal.includes(sNeg)) {
+                                      if (filter.whole ? tVal === searchNeg : tVal.includes(searchNeg)) {
                                           foundNeg = true;
                                       }
                                   }
                               }
                               
-                              if (foundPos && foundNeg) break;
+                              if (foundNeg) return false; // Early exit if negative keyword is found
+                              if (foundPos && !hasNeg) break;
                           }
 
-                          if (foundNeg) return false;
-                          if (!foundPos) return false;
+                          if (hasPos && !foundPos) return false;
                           return true;
                       };
 
